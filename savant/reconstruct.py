@@ -242,7 +242,9 @@ def reconstruct_bus(date: dt.date) -> pd.DataFrame:
         return pd.DataFrame()
     sched = pd.read_parquet(config.WORK / "static" / "bus_schedule.parquet")
     sched = sched[sched.trip_id.isin({k[1] for k in obs})]
-    stops = pd.read_parquet(config.WORK / "static" / "bus_stops.parquet").set_index("stop_id")
+    # the borough feeds share some stops, so a stop_id can appear more than once
+    stops = (pd.read_parquet(config.WORK / "static" / "bus_stops.parquet")
+             .drop_duplicates("stop_id").set_index("stop_id"))
     by_trip = {tid: g.sort_values("seq") for tid, g in sched.groupby("trip_id")}
     rows = []
     for (veh, tid), ob in obs.items():

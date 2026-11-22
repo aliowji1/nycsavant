@@ -253,7 +253,7 @@ def simulate_bus_truth(date: dt.date, rng: np.random.Generator, weekday: bool) -
 
 def write_bus_snapshots(truth: pd.DataFrame, date: dt.date, interval: int):
     base = service_midnight(date)
-    stops = pd.read_parquet(config.WORK / "static" / "bus_stops.parquet").set_index("stop_id")
+    stops = pd.read_parquet(config.WORK / "static" / "bus_stops.parquet").drop_duplicates("stop_id").set_index("stop_id")
     trips = []
     for tid, g in truth.groupby("trip_id", sort=False):
         ll = stops.loc[g.stop_id, ["lat", "lon"]].to_numpy()

@@ -232,6 +232,7 @@ def build_bus(feed_dir: Path | None = None, out: Path | None = None):
         out / "bus_schedule.parquet", index=False)
     s = stops[["stop_id", "stop_name", "stop_lat", "stop_lon"]].copy()
     s["lat"], s["lon"] = s.stop_lat.astype(float), s.stop_lon.astype(float)
+    s = s.drop_duplicates("stop_id")      # stops shared between borough feeds
     s[["stop_id", "stop_name", "lat", "lon"]].to_parquet(out / "bus_stops.parquet", index=False)
 
     shapes = read(feed_dir, "shapes")
