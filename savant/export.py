@@ -55,10 +55,18 @@ def network():
 
 # ======================================================================= marey
 def marey(arr: pd.DataFrame, lines: dict, dates: list[str]):
-    """One file per day: {route: [[dir, [stationIdx...], [secs...]], ...]} where
-    stationIdx indexes the route's canonical southbound (direction 1) order."""
+    """One file per day: {route: [[dir, [stationIdx...], [secs...], id, fromStart], ...]}
+    where stationIdx indexes the route's canonical southbound (direction 1) order
+    and fromStart is 1 if the trip was seen at its scheduled first stop (trips
+    already running when collection began are drawn, but not lined up)."""
+    from . import gtfs_static
     for date in dates:
         day = arr[arr.date == date]
+        _, sched_path = gtfs_static.subway_schedule_for(dt.date.fromisoformat(date))
+        sched = pd.read_parquet(sched_path, columns=["trip_id", "station", "seq"])
+        origin = sched.sort_values("seq").drop_duplicates("trip_id").set_index("trip_id").station
+        first_seen = day.sort_values("arr").drop_duplicates("rt_trip_id").set_index("rt_trip_id")
+        from_start = (first_seen.station == first_seen.trip_id.map(origin)).astype(int).to_dict()
         out = {}
         for route, rg in day.groupby("route_id"):
             if route not in lines:
@@ -71,7 +79,7 @@ def marey(arr: pd.DataFrame, lines: dict, dates: list[str]):
                 if len(g) < 2:
                     continue
                 trips.append([int(g.direction_id.iat[0]), [idx[s] for s in g.station],
-                              [int(x) for x in g.arr], tid])
+                              [int(x) for x in g.arr], tid, from_start.get(tid, 0)])
             out[route] = trips
         dump(out, f"marey/{date}.json")
 

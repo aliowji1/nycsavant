@@ -158,10 +158,14 @@ function aligned(el, stopsEl, L, order, trips, net) {
   const name = stationName(net);
   el.innerHTML = "";
   stopsEl.innerHTML = "";
-  const hours = d3.extent(trips, (t) => t[2][0]);
+  const hours = d3.extent(trips.filter((t) => t[4] !== 0), (t) => t[2][0]);
   const seq = d3.scaleSequential([hours[0] || 0, hours[1] || 1], d3.interpolateRgb("#b7d3f6", "#0d366b"));
+  // only trips seen from their first stop can be lined up fairly; a trip first
+  // seen mid-route would look short and fast (older data files have no flag)
+  const full = trips.filter((t) => t[4] !== 0);
+  const partial = trips.length - full.length;
   [1, 0].forEach((dir) => {
-    const ts = trips.filter((t) => t[0] === dir);
+    const ts = full.filter((t) => t[0] === dir);
     const box = S.el(`<div class="card"><h3 style="margin-top:0">Toward ${name(order.stations[dir === 1 ? order.stations.length - 1 : 0])}</h3><div class="chart"></div></div>`);
     el.appendChild(box);
     const c = box.querySelector(".chart");
@@ -190,6 +194,8 @@ function aligned(el, stopsEl, L, order, trips, net) {
           </tbody></table></div></div>`;
       });
   });
+  if (partial) el.insertAdjacentHTML("beforeend", `<p class="note" style="grid-column:1/-1;margin:0">${partial} trip${partial > 1 ? "s" : ""}
+    left out because they weren't seen at their first stop (already running when collection started, or matched to no scheduled trip).</p>`);
   el.insertAdjacentHTML("beforeend", `<div class="legend" style="grid-column:1/-1">Departure time
     <span class="ramp" style="background:linear-gradient(90deg,#b7d3f6,#0d366b)"></span>${S.fmt.clock(hours[0] || 0)} to ${S.fmt.clock(hours[1] || 0)}${(hours[1] || 0) >= 86400 ? " (after midnight)" : ""}</div>`);
 }
