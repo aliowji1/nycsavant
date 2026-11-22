@@ -3,6 +3,22 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_dotenv(path: Path):
+    """Read KEY=value lines from .env into the environment (real env vars win)."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv(ROOT / ".env")
+
 DATA = Path(os.environ.get("SAVANT_DATA", ROOT / "data"))
 RAW = DATA / "raw"            # raw feed snapshots: raw/<date>/<feed>/<HHMMSS>.pb.gz
 STATIC = DATA / "static"      # GTFS static: static/subway, static/bus
