@@ -63,7 +63,10 @@ class Collector:
                 try:
                     fut.result()
                 except Exception as e:  # keep going; one bad feed shouldn't stop the rest
-                    log.warning("%s: %s", n, e)
+                    msg = str(e)
+                    if config.BUSTIME_KEY:
+                        msg = msg.replace(config.BUSTIME_KEY, "***")   # keep the key out of logs
+                    log.warning("%s: %s", n, msg)
 
     def run(self, interval: int = config.POLL_SECONDS):
         urls = feed_urls()
