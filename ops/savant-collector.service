@@ -1,0 +1,19 @@
+# systemd unit for the collector. Install:
+#   sudo cp ops/savant-collector.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now savant-collector
+#   journalctl -u savant-collector -f
+[Unit]
+Description=NYC Savant realtime feed collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=savant
+WorkingDirectory=/opt/nycsavant
+EnvironmentFile=/opt/nycsavant/.env
+ExecStart=/usr/bin/python3 -m savant collect
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

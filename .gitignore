@@ -1,0 +1,7 @@
+data/
+site/data/
+logs/
+.env
+__pycache__/
+*.pyc
+build/
