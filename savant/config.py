@@ -49,6 +49,9 @@ BUSTIME_KEY = os.environ.get("BUSTIME_KEY", "")
 # Static GTFS downloads (refreshed weekly by `savant static`)
 STATIC_URLS = {
     "subway": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip",
+    # Regular schedule plus planned service changes (weekend work etc.) for the
+    # next ~7 days. Fetched daily and kept per date, see gtfs_static.fetch_supplemented.
+    "subway_supplemented": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_supplemented.zip",
     "bus_m": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_m.zip",
     "bus_bx": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_bx.zip",
     "bus_b": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_b.zip",
@@ -58,6 +61,7 @@ STATIC_URLS = {
 }
 
 POLL_SECONDS = 30
+SUPPLEMENTED_KEEP_DAYS = 14
 
 # Ridership (NY Open Data, Socrata). Hourly entries by station complex, and
 # origin-destination estimates (used to estimate exits).

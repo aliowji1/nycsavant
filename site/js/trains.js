@@ -6,7 +6,7 @@ const WINDOWS = { am: [5.5, 10.5, "Morning rush"], mid: [10, 15.5, "Midday"], pm
 
 S.pages.trains = async (root, params) => {
   const [meta, net, lines] = await Promise.all([S.load("meta.json"), S.load("network.json"), S.load("lines.json")]);
-  const routes = S.sortRoutes(Object.keys(net.lines).filter((r) => S.objs(lines).some((l) => l.route_id === r)));
+  const routes = S.sortRoutes(Object.keys(net.lines));
   let route = params.get("route") || "A";
   if (!routes.includes(route)) route = routes[0];
   let date = params.get("date") || meta.dates.filter((d) => new Date(d + "T12:00").getDay() % 6 !== 0).slice(-1)[0] || meta.dates.slice(-1)[0];

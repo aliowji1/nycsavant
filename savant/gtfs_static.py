@@ -47,6 +47,39 @@ def download_all():
         pd.concat(dfs).drop_duplicates().to_csv(out / f"{stem}.txt", index=False)
 
 
+def fetch_supplemented(today: dt.date | None = None):
+    """Download today's supplemented subway schedule and build its tables.
+
+    The supplemented feed reflects planned service changes, so the schedule a
+    day actually ran on is only available around that day. Each fetch is kept
+    under static/supplemented/<date>/ and work/static/supplemented/<date>/;
+    reconstruction uses the newest copy fetched on or before the service day.
+    """
+    import shutil
+    today = today or dt.date.today()
+    feed_dir = config.STATIC / "supplemented" / str(today)
+    download("subway_supplemented", config.STATIC_URLS["subway_supplemented"], feed_dir)
+    build_subway(feed_dir, config.WORK / "static" / "supplemented" / str(today))
+    cutoff = today - dt.timedelta(days=config.SUPPLEMENTED_KEEP_DAYS)
+    for root in (config.STATIC / "supplemented", config.WORK / "static" / "supplemented"):
+        for d in root.glob("????-??-??"):
+            if dt.date.fromisoformat(d.name) < cutoff:
+                shutil.rmtree(d)
+
+
+def subway_schedule_for(date: dt.date) -> tuple[Path, Path]:
+    """(feed dir, schedule parquet) to use for a service day: the newest
+    supplemented copy fetched on or before that day, else the regular schedule."""
+    root = config.WORK / "static" / "supplemented"
+    best = None
+    for d in sorted(root.glob("????-??-??")) if root.exists() else []:
+        if dt.date.fromisoformat(d.name) <= date and (d / "subway_schedule.parquet").exists():
+            best = d.name
+    if best:
+        return config.STATIC / "supplemented" / best, root / best / "subway_schedule.parquet"
+    return config.STATIC / "subway", config.WORK / "static" / "subway_schedule.parquet"
+
+
 def read(feed_dir: Path, name: str, **kw) -> pd.DataFrame:
     p = Path(feed_dir) / f"{name}.txt"
     if not p.exists():

@@ -1,6 +1,7 @@
 """Command line: python -m savant <command>
 
-  static        download current MTA static GTFS and rebuild lookup tables
+  static        download current MTA static GTFS (+ today's supplemented subway schedule)
+  supplemented  download today's subway schedule with planned service changes (also run by nightly)
   build-static  rebuild lookup tables from data/static (no download)
   collect       poll realtime feeds forever (run as a service)
   reconstruct   turn raw snapshots into arrivals   [--date YYYY-MM-DD, default yesterday]
@@ -35,6 +36,10 @@ def main():
         from . import gtfs_static
         gtfs_static.download_all()
         gtfs_static.build_all()
+        gtfs_static.fetch_supplemented(dt.datetime.now(ZoneInfo(config.TZ)).date())
+    elif a.cmd == "supplemented":
+        from . import gtfs_static
+        gtfs_static.fetch_supplemented(dt.datetime.now(ZoneInfo(config.TZ)).date())
     elif a.cmd == "build-static":
         from . import gtfs_static
         gtfs_static.build_all()
@@ -58,8 +63,13 @@ def main():
         from . import export
         export.run(a.days, simulated=a.simulated)
     elif a.cmd == "nightly":
-        from . import collector, export, reconstruct, ridership
+        from . import collector, export, gtfs_static, reconstruct, ridership
         d = yesterday()
+        try:
+            # today's planned-work schedule, used when today is reconstructed tomorrow
+            gtfs_static.fetch_supplemented(d + dt.timedelta(days=1))
+        except Exception as e:
+            logging.warning("supplemented schedule fetch failed: %s", e)
         reconstruct.run(d)
         try:
             # hourly ridership is published with a lag; fetch whatever exists

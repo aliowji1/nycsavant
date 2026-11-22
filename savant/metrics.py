@@ -66,31 +66,46 @@ def subway_trips(arr: pd.DataFrame) -> pd.DataFrame:
 
 
 def bus_trips(arr: pd.DataFrame) -> pd.DataFrame:
+    """One row per (day, bus, trip).
+
+    BusTime usually switches a bus to its next trip only after it has left the
+    first stop, so a trip counts as complete when it was seen from within its
+    first three stops to the terminal. Time saved compares the runtime between
+    the stops actually observed against the schedule for that same stretch.
+    """
     a = arr.sort_values(["date", "vehicle", "trip_id", "seq"])
     sched = pd.read_parquet(config.WORK / "static" / "bus_schedule.parquet",
                             columns=["trip_id", "service_id", "seq", "arr"])
+    sched = sched[sched.trip_id.isin(a.trip_id.unique())].sort_values(["trip_id", "seq"])
+    sched["idx"] = sched.groupby("trip_id").cumcount()
     sg = sched.groupby("trip_id")
-    meta = pd.DataFrame({"first_seq": sg.seq.min(), "last_seq": sg.seq.max(), "n_sched": sg.size(),
+    meta = pd.DataFrame({"last_seq": sg.seq.max(), "n_sched": sg.size(),
                          "sched_start": sg.arr.min(), "sched_end": sg.arr.max(),
                          "service": sg.service_id.first().map(SERVICE_TYPE)}).reset_index()
+    a = a.merge(sched[["trip_id", "seq", "idx"]], on=["trip_id", "seq"], how="left")
     key = ["date", "vehicle", "trip_id"]
     g = a.groupby(key)
     t = g.agg(route_id=("route_id", "first"), direction_id=("direction_id", "first"),
-              n_obs=("seq", "size"), min_seq=("seq", "min"), max_seq=("seq", "max"),
-              act_start=("arr", "first"), act_end=("arr", "last")).reset_index().merge(meta, on="trip_id")
-    t["complete"] = (t.min_seq == t.first_seq) & (t.max_seq == t.last_seq) & (t.n_obs >= 0.8 * t.n_sched)
+              n_obs=("seq", "size"), first_idx=("idx", "min"), max_seq=("seq", "max"),
+              act_start=("arr", "first"), act_end=("arr", "last"),
+              sched_at_start=("sched_arr", "first"), sched_at_end=("sched_arr", "last")).reset_index()
+    t = t.merge(meta, on="trip_id")
+    t["complete"] = (t.first_idx <= 2) & (t.max_seq == t.last_seq) & (t.n_obs >= 0.8 * t.n_sched)
     t["runtime"] = t.act_end - t.act_start
+    t["excess"] = t.runtime - (t.sched_at_end - t.sched_at_start)   # vs schedule, same stretch
     t["end_delay"] = t.act_end - t.sched_end
     t["hour"] = (t.sched_start // 3600).astype(int)
-    t["origin"], t["terminal"] = t.first_seq, t.last_seq
-    return _add_trip_scores(t, ["route_id", "direction_id", "service", "hour"], "bus")
+    t["origin"], t["terminal"] = t.first_idx, t.last_seq
+    return _add_trip_scores(t, ["route_id", "direction_id", "service", "hour"], "bus", value="excess")
 
 
-def _add_trip_scores(t: pd.DataFrame, bucket: list[str], mode: str) -> pd.DataFrame:
+def _add_trip_scores(t: pd.DataFrame, bucket: list[str], mode: str, value: str = "runtime") -> pd.DataFrame:
+    """time_saved = typical value for the bucket minus this trip's value
+    (value is runtime for the subway, runtime-vs-schedule excess for buses)."""
     c = t[t.complete]
-    typical = c.groupby(bucket).runtime.median().rename("typical_runtime")
+    typical = c.groupby(bucket)[value].median().rename("typical_" + value)
     t = t.merge(typical, left_on=bucket, right_index=True, how="left")
-    t["time_saved"] = t.typical_runtime - t.runtime
+    t["time_saved"] = t["typical_" + value] - t[value]
     early, late = config.ON_SCHED[mode]
     t["on_sched"] = t.complete & t.end_delay.between(-early, late)
     return t

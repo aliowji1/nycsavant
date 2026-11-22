@@ -293,7 +293,7 @@ def write_bus_snapshots(truth: pd.DataFrame, date: dt.date, interval: int):
             v.vehicle.id = tr["veh"]
             v.position.latitude, v.position.longitude = float(lat), float(lon)
             v.stop_id = tr["stop_ids"][j]
-            v.current_status = rt.VehiclePosition.STOPPED_AT if abs(tr["arr"][j] - t) < 15 else rt.VehiclePosition.IN_TRANSIT_TO
+            # like real BusTime: no current_status, just position and next stop
             v.timestamp = now
         d = config.RAW / stamp.strftime("%Y-%m-%d") / "bus_vehicles"
         d.mkdir(parents=True, exist_ok=True)

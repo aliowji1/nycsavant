@@ -39,9 +39,14 @@ and per-line stat lines. If the MTA ever publishes consists, add the car ID as t
 
 * `savant/collector.py` polls every feed concurrently, skips duplicate snapshots, and writes gzipped protobuf.
 * `savant/reconstruct.py` keeps the last prediction for each (trip, stop) before the stop drops off the train's list and
-  discards stops that vanished while still more than 5 minutes out. Trips are matched to the static timetable by
-  `origin-time_route..direction+shape` (falling back to the short form without the shape suffix). Buses get a passage
-  time per stop from position snapshots.
+  discards stops that vanished while still more than 5 minutes out. Trips are matched to the timetable by
+  `origin-time_route..direction+shape` (falling back to the short form without the shape suffix), using the
+  **supplemented** schedule (planned work included) fetched on or before that day; without it about half of weekend
+  trips don't match. Stops reported out of scheduled order or at impossible speed (over 100 km/h) are dropped; a bad
+  terminal time is replaced by the previous stop plus scheduled running time and flagged `estimated`.
+* Buses: BusTime never reports "stopped at", so a stop's passage time comes from GPS (first snapshot within 40 m,
+  100 m for the first and last stop), else the midpoint between snapshots. A trip counts as complete when seen from
+  within its first three stops to the terminal.
 * `savant/metrics.py` holds every definition (on-schedule, time saved, replacement level, TAR). Thresholds are in `savant/config.py`.
 * The site is plain HTML + D3 with no build step. Marey data is one JSON file per day, loaded on demand.
 
@@ -83,7 +88,7 @@ snapshots to R2, with the nightly job pulling them down. 1-minute polling roughl
 crowding, incidents that hold every train through a station for a while, cancellations, per-bus quality and breakdowns,
 and imperfect predictions. It writes snapshots in the collector's format, so the real pipeline runs unchanged.
 It also writes the invented truth to `data/work/truth/`, which is how reconstruction accuracy was checked:
-on a simulated weekday, 99% of reconstructed subway arrivals were within 7 seconds of the truth and 97% of stop events were recovered.
+on a simulated weekday, 95% of reconstructed subway arrivals were within 8 seconds of the truth and 99.9% of stop events were recovered; bus stop passages were within 19 seconds 95% of the time.
 
 ```bash
 python -m savant static          # or tools/json_to_gtfs.py if the MTA is unreachable
