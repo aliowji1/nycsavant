@@ -45,6 +45,8 @@ def download_all():
     out.mkdir(parents=True, exist_ok=True)
     for stem, dfs in frames.items():
         pd.concat(dfs).drop_duplicates().to_csv(out / f"{stem}.txt", index=False)
+    import shutil
+    shutil.rmtree(config.STATIC / "_tmp", ignore_errors=True)   # per-borough copies, now merged
 
 
 def fetch_supplemented(today: dt.date | None = None):
@@ -60,6 +62,10 @@ def fetch_supplemented(today: dt.date | None = None):
     feed_dir = config.STATIC / "supplemented" / str(today)
     download("subway_supplemented", config.STATIC_URLS["subway_supplemented"], feed_dir)
     build_subway(feed_dir, config.WORK / "static" / "supplemented" / str(today))
+    # only the service calendar is read again later; drop the ~130 MB of other files
+    for f in feed_dir.glob("*.txt"):
+        if f.name not in ("calendar.txt", "calendar_dates.txt"):
+            f.unlink()
     cutoff = today - dt.timedelta(days=config.SUPPLEMENTED_KEEP_DAYS)
     for root in (config.STATIC / "supplemented", config.WORK / "static" / "supplemented"):
         for d in root.glob("????-??-??"):

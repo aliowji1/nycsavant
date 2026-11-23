@@ -3,7 +3,7 @@
 Layout: data/raw/<YYYY-MM-DD>/<feed>/<HHMMSS>.pb.gz  (date/time in New York time,
 taken from the feed header timestamp so identical snapshots are skipped).
 
-Roughly 1 GB/day gzipped at 30 s (about 0.25 GB of it subway, the rest citywide buses). The
+Roughly 0.45 GB/day gzipped at 30 s (about 0.27 GB subway, 0.17 GB citywide buses). The
 nightly job only needs the last ~2 days of raw data; prune older days with
 `savant prune` once they have been reconstructed.
 """

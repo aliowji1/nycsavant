@@ -53,8 +53,8 @@ and per-line stat lines. If the MTA ever publishes consists, add the car ID as t
 ## Running it for real
 
 You need an always-on machine: a $5/month VPS, a Raspberry Pi, or any box that stays up. Plan on roughly
-1 GB/day of raw snapshots (about 0.25 GB subway, the rest the citywide bus feed); `nightly` prunes raw days older than 3 days once
-they're reconstructed, so steady-state disk use is a few GB plus about 15 MB/day of parquet.
+0.45 GB/day of raw snapshots (measured on a real Sunday: about 0.27 GB subway, 0.17 GB citywide buses); `nightly` prunes raw days older than 3 days once
+they're reconstructed, so steady-state disk use is about 2 to 3 GB plus about 6 MB/day of reconstructed arrivals.
 
 ```bash
 git clone <this repo> /opt/nycsavant && cd /opt/nycsavant
