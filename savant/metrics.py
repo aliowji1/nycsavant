@@ -21,6 +21,13 @@ from . import config
 
 SHRINK_K = 10
 
+def daytype(date: str) -> str:
+    """Weekday / Saturday / Sunday from the calendar date. (Supplemented
+    schedules use service codes like 'L0S2-2-3049' that don't say.)"""
+    w = dt.date.fromisoformat(date).weekday()
+    return "Weekday" if w < 5 else "Saturday" if w == 5 else "Sunday"
+
+
 SERVICE_TYPE = lambda sid: ("Weekday" if "Weekday" in sid else "Saturday" if "Saturday" in sid
                             else "Sunday" if "Sunday" in sid else sid)
 
@@ -47,7 +54,7 @@ def subway_static_meta(dates=None) -> pd.DataFrame:
     return pd.DataFrame({
         "origin": g.station.first(), "terminal": g.station.last(),
         "sched_start": g.dep.first(), "sched_end": g.arr.last(), "n_sched": g.size(),
-        "service": g.service_id.first().map(SERVICE_TYPE),
+        "service": g.service_id.first().map(SERVICE_TYPE), "trip_key": g.trip_key.first(),
     }).reset_index()
 
 
@@ -67,6 +74,11 @@ def subway_trips(arr: pd.DataFrame) -> pd.DataFrame:
     t["runtime"] = t.act_end - t.act_start
     t["end_delay"] = t.act_end - t.sched_end
     t["hour"] = (t.sched_start // 3600).astype(int)
+    t["service"] = t.date.map(daytype)
+    # a scheduled trip that stays the same across schedule versions: day type +
+    # origin time + route + direction (MTA trip IDs change with each publication)
+    from .gtfs_static import short_key
+    t["slot"] = t.service + "|" + t.trip_key.map(short_key)
     return _add_trip_scores(t, ["route_id", "direction_id", "origin", "terminal", "service", "hour"], "subway")
 
 
@@ -100,6 +112,7 @@ def bus_trips(arr: pd.DataFrame) -> pd.DataFrame:
     t["excess"] = t.runtime - (t.sched_at_end - t.sched_at_start)   # vs schedule, same stretch
     t["end_delay"] = t.act_end - t.sched_end
     t["hour"] = (t.sched_start // 3600).astype(int)
+    t["service"] = t.date.map(daytype)
     t["origin"], t["terminal"] = t.first_idx, t.last_seq
     return _add_trip_scores(t, ["route_id", "direction_id", "service", "hour"], "bus", value="excess")
 

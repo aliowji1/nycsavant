@@ -87,13 +87,13 @@ def marey(arr: pd.DataFrame, lines: dict, dates: list[str]):
 # ======================================================================= savant
 def savant_subway(trips: pd.DataFrame, st_names: dict):
     t = trips.copy()
-    slots = metrics.stat_lines(t, "trip_id", min_trips=5)
-    meta = t.drop_duplicates("trip_id").set_index("trip_id")
-    slots = slots.join(meta[["route_id", "direction_id", "origin", "terminal", "sched_start", "service"]], on="trip_id")
+    slots = metrics.stat_lines(t, "slot", min_trips=5)
+    meta = t.drop_duplicates("slot").set_index("slot")
+    slots = slots.join(meta[["route_id", "direction_id", "origin", "terminal", "sched_start", "service"]], on="slot")
     slots["label"] = [f"{svc} {fmt_time(s)} from {st_names.get(o, o)}"
                       for svc, s, o in zip(slots.service, slots.sched_start, slots.origin)]
     slots["to"] = slots.terminal.map(st_names)
-    cols = ["trip_id", "label", "route_id", "direction_id", "to", "trips", "on_sched", "on_sched_rate",
+    cols = ["slot", "label", "route_id", "direction_id", "to", "trips", "on_sched", "on_sched_rate",
             "time_saved", "median_delay", "tar", "rank_line", "line_size", "replacement_rate", "qualified"]
     for route, g in slots.groupby("route_id"):
         dump({"cols": cols, "rows": records(g.sort_values("tar", ascending=False), cols)}, f"slots/{route}.json")
