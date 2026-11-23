@@ -35,8 +35,13 @@ def load_arrivals(kind: str, days: int | None = None) -> pd.DataFrame:
 
 
 # ======================================================================= trips
-def subway_static_meta() -> pd.DataFrame:
-    s = pd.read_parquet(config.WORK / "static" / "subway_schedule.parquet")
+def subway_static_meta(dates=None) -> pd.DataFrame:
+    """Origin, terminal and scheduled times per trip, from the same schedule
+    each day was matched against (supplemented copies included)."""
+    from . import gtfs_static
+    paths = {gtfs_static.subway_schedule_for(dt.date.fromisoformat(d))[1] for d in (dates or [])}
+    paths = paths or {config.WORK / "static" / "subway_schedule.parquet"}
+    s = pd.concat([pd.read_parquet(p) for p in sorted(paths)]).drop_duplicates(["trip_id", "seq"])
     s = s.sort_values(["trip_id", "seq"])
     g = s.groupby("trip_id")
     return pd.DataFrame({
@@ -48,7 +53,7 @@ def subway_static_meta() -> pd.DataFrame:
 
 def subway_trips(arr: pd.DataFrame) -> pd.DataFrame:
     a = arr.dropna(subset=["trip_id"]).copy()
-    meta = subway_static_meta()
+    meta = subway_static_meta(sorted(a.date.unique()))
     a = a.merge(meta[["trip_id", "origin", "terminal"]], on="trip_id")
     key = ["date", "rt_trip_id"]
     g = a.groupby(key)
