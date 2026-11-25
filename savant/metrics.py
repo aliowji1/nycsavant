@@ -21,11 +21,25 @@ from . import config
 
 SHRINK_K = 10
 
+_DAYTYPE: dict[str, str] = {}
+
+
 def daytype(date: str) -> str:
-    """Weekday / Saturday / Sunday from the calendar date. (Supplemented
-    schedules use service codes like 'L0S2-2-3049' that don't say.)"""
-    w = dt.date.fromisoformat(date).weekday()
-    return "Weekday" if w < 5 else "Saturday" if w == 5 else "Sunday"
+    """Weekday / Saturday / Sunday schedule in effect on a date, from the
+    regular subway calendar, so holidays count as what they run (Thanksgiving
+    and Christmas run a Sunday schedule). Supplemented schedules use service
+    codes like 'L0S2-2-3049' that don't say, hence the regular calendar."""
+    if date not in _DAYTYPE:
+        from . import gtfs_static
+        d = dt.date.fromisoformat(date)
+        kinds = {SERVICE_TYPE(s) for s in gtfs_static.active_services(config.STATIC / "subway", d)}
+        kinds &= {"Weekday", "Saturday", "Sunday"}
+        if len(kinds) == 1:
+            _DAYTYPE[date] = kinds.pop()
+        else:                       # calendar missing or ambiguous: go by day of week
+            w = d.weekday()
+            _DAYTYPE[date] = "Weekday" if w < 5 else "Saturday" if w == 5 else "Sunday"
+    return _DAYTYPE[date]
 
 
 SERVICE_TYPE = lambda sid: ("Weekday" if "Weekday" in sid else "Saturday" if "Saturday" in sid
