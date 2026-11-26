@@ -46,8 +46,10 @@ echo "== app user and code"
 id "$USER_NAME" >/dev/null 2>&1 || useradd -m -s /bin/bash "$USER_NAME"
 if [ ! -d "$APP/.git" ]; then
   git clone -q "$REPO" "$APP"
+  chown -R "$USER_NAME:$USER_NAME" "$APP"
 else
-  git -C "$APP" pull -q
+  # the code belongs to the app user; update it as that user (git refuses otherwise)
+  sudo -u "$USER_NAME" git -C "$APP" pull -q
 fi
 mkdir -p "$APP/logs" "$APP/data"
 chown -R "$USER_NAME:$USER_NAME" "$APP"
