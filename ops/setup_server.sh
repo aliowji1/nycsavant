@@ -11,8 +11,13 @@ REPO=https://github.com/aliowji1/nycsavant.git
 USER_NAME=savant
 
 echo "== packages"
-apt-get update -q
-DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3-venv python3-pip git rsync
+# a fresh server runs its own updates for a few minutes after boot; wait for them
+while pgrep -x apt-get >/dev/null || pgrep -x apt >/dev/null || pgrep -f unattended-upgr >/dev/null; do
+  echo "   waiting for the server's automatic updates to finish..."
+  sleep 10
+done
+apt-get -o DPkg::Lock::Timeout=600 update -q
+DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -q python3-venv python3-pip git rsync
 timedatectl set-timezone America/New_York
 
 echo "== swap (headroom for the nightly job on small servers)"
