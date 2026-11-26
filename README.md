@@ -56,6 +56,15 @@ You need an always-on machine: a $5/month VPS, a Raspberry Pi, or any box that s
 0.45 GB/day of raw snapshots (measured on a real Sunday: about 0.27 GB subway, 0.17 GB citywide buses); `nightly` prunes raw days older than 3 days once
 they're reconstructed, so steady-state disk use is about 2 to 3 GB plus about 6 MB/day of reconstructed arrivals.
 
+**Quickest:** on a fresh Ubuntu 24.04 server, as root, run `ops/setup_server.sh` (it installs everything, asks for
+your BusTime key, starts the collector as a service and schedules the nightly job):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aliowji1/nycsavant/main/ops/setup_server.sh -o setup.sh && bash setup.sh
+```
+
+Or by hand:
+
 ```bash
 git clone <this repo> /opt/nycsavant && cd /opt/nycsavant
 pip install -r requirements.txt
