@@ -16,6 +16,7 @@ import zipfile
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from . import config
@@ -31,22 +32,27 @@ def download(name: str, url: str, dest: Path):
 
 
 def download_all():
-    """Fetch current static GTFS from the MTA. Bus zips are merged into one dir."""
-    download("subway", config.STATIC_URLS["subway"], config.STATIC / "subway")
-    frames: dict[str, list[pd.DataFrame]] = {}
-    for k, url in config.STATIC_URLS.items():
-        if not k.startswith("bus_"):
-            continue
-        tmp = config.STATIC / "_tmp" / k
-        download(k, url, tmp)
-        for f in tmp.glob("*.txt"):
-            frames.setdefault(f.stem, []).append(pd.read_csv(f, dtype=str))
-    out = config.STATIC / "bus"
-    out.mkdir(parents=True, exist_ok=True)
-    for stem, dfs in frames.items():
-        pd.concat(dfs).drop_duplicates().to_csv(out / f"{stem}.txt", index=False)
+    """Fetch current static GTFS from the MTA.
+
+    Bus feeds come one zip per borough. They are kept separate and processed
+    one at a time (never concatenated: citywide stop_times is ~7M rows), and
+    only the small calendar files are merged into static/bus/."""
     import shutil
-    shutil.rmtree(config.STATIC / "_tmp", ignore_errors=True)   # per-borough copies, now merged
+    download("subway", config.STATIC_URLS["subway"], config.STATIC / "subway")
+    feeds = config.STATIC / "bus_feeds"
+    shutil.rmtree(feeds, ignore_errors=True)
+    shutil.rmtree(config.STATIC / "_tmp", ignore_errors=True)
+    for k, url in config.STATIC_URLS.items():
+        if k.startswith("bus_"):
+            download(k, url, feeds / k)
+    out = config.STATIC / "bus"
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    for name in ("calendar", "calendar_dates"):
+        parts = [read(d, name) for d in sorted(feeds.iterdir())]
+        parts = [p for p in parts if len(p)]
+        if parts:
+            pd.concat(parts).drop_duplicates().to_csv(out / f"{name}.txt", index=False)
 
 
 def fetch_supplemented(today: dt.date | None = None):
@@ -103,6 +109,30 @@ def read(feed_dir: Path, name: str, **kw) -> pd.DataFrame:
     if not p.exists():
         return pd.DataFrame()
     return pd.read_csv(p, dtype=str, keep_default_na=False, **kw)
+
+
+def read_stop_times(feed_dir: Path, with_departure: bool = False) -> pd.DataFrame:
+    """stop_times with IDs and times as categoricals (millions of rows, few
+    distinct values), times converted to seconds via the categories only."""
+    cols = ["trip_id", "stop_id", "arrival_time", "stop_sequence"] + (["departure_time"] if with_departure else [])
+    st = pd.read_csv(Path(feed_dir) / "stop_times.txt", usecols=cols,
+                     dtype={c: "category" for c in cols if c != "stop_sequence"} | {"stop_sequence": "int32"})
+    for c, out in (("arrival_time", "arr"), ("departure_time", "dep")):
+        if c in st.columns:
+            secs = hms_to_sec(pd.Series(st[c].cat.categories.astype(str))).to_numpy("int32")
+            st[out] = secs[st[c].cat.codes.to_numpy()]
+            st = st.drop(columns=c)
+    return st.rename(columns={"stop_sequence": "seq"})
+
+
+def attach_trips(st: pd.DataFrame, trips: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Add trip-level columns to stop rows by category code (no big merge)."""
+    t = trips.drop_duplicates("trip_id").set_index("trip_id").reindex(st.trip_id.cat.categories)
+    codes = st.trip_id.cat.codes.to_numpy()
+    for c in cols:
+        vals = pd.Categorical(t[c].fillna(""))
+        st[c] = pd.Categorical.from_codes(vals.codes[codes], vals.categories)
+    return st[st.route_id != ""] if "route_id" in cols else st
 
 
 def hms_to_sec(s: pd.Series) -> pd.Series:
@@ -181,26 +211,30 @@ def build_subway(feed_dir: Path | None = None, out: Path | None = None):
     stops = read(feed_dir, "stops")
     routes = read(feed_dir, "routes")
     trips = read(feed_dir, "trips")
-    st = read(feed_dir, "stop_times", usecols=["trip_id", "stop_id", "arrival_time", "departure_time", "stop_sequence"])
-
-    st["station"] = st.stop_id.str[:-1].where(st.stop_id.str[-1].isin(["N", "S"]), st.stop_id)
-    st["arr"] = hms_to_sec(st.arrival_time)
-    st["dep"] = hms_to_sec(st.departure_time)
-    st["seq"] = st.stop_sequence.astype(int)
-    st = st.merge(trips[["trip_id", "route_id", "service_id", "direction_id", "shape_id"]], on="trip_id")
-    st["trip_key"] = st.trip_id.map(subway_trip_key)
-    st["short_key"] = st.trip_key.map(short_key)
+    st = read_stop_times(feed_dir, with_departure=True)
+    # station = stop_id without its N/S platform suffix, computed on the categories
+    sc = pd.Series(st.stop_id.cat.categories.astype(str))
+    stripped = sc.where(~sc.str[-1].isin(["N", "S"]), sc.str[:-1]).to_numpy()
+    uniq, inv = np.unique(stripped, return_inverse=True)
+    st["station"] = pd.Categorical.from_codes(inv[st.stop_id.cat.codes.to_numpy()], uniq)
+    st = attach_trips(st, trips, ["route_id", "service_id", "direction_id", "shape_id"])
+    tc = pd.Series(st.trip_id.cat.categories.astype(str))
+    tk = tc.map(subway_trip_key)
+    codes = st.trip_id.cat.codes.to_numpy()
+    st["trip_key"] = pd.Categorical.from_codes(codes, tk) if not tk.duplicated().any() else tk.to_numpy()[codes]
+    sk = tk.map(short_key).to_numpy()[codes]
+    st["short_key"] = pd.Categorical(sk)
     st = st.sort_values(["trip_id", "seq"])
 
     sched = st[["trip_id", "trip_key", "short_key", "route_id", "service_id", "direction_id",
                 "station", "seq", "arr", "dep"]]
-    sched.to_parquet(out / "subway_schedule.parquet", index=False)
+    _to_parquet_plain(sched, out / "subway_schedule.parquet")
 
     # stations
     parents = stops[stops.location_type == "1"].copy()
     parents["lat"] = parents.stop_lat.astype(float)
     parents["lon"] = parents.stop_lon.astype(float)
-    served = st.groupby("station").route_id.agg(lambda s: "".join(sorted(set(s))))
+    served = st.groupby("station", observed=True).route_id.agg(lambda s: "".join(sorted(set(s.astype(str)))))
     parents["routes"] = parents.stop_id.map(served).fillna("")
     parents = parents[parents.routes != ""]
     parents[["stop_id", "stop_name", "lat", "lon", "routes"]].rename(
@@ -214,64 +248,104 @@ def build_subway(feed_dir: Path | None = None, out: Path | None = None):
                  for sid, g in shapes.groupby("shape_id")}
 
     lines = {}
-    for rid, rg in st.groupby("route_id"):
+    for rid, rg in st.groupby("route_id", observed=True):
         r = routes[routes.route_id == rid].iloc[0]
         entry = {"route": rid, "name": r.route_long_name, "color": "#" + (r.route_color or "808183"),
                  "text": "#" + (r.route_text_color or "FFFFFF"), "dirs": {}}
-        for d, dg in rg.groupby("direction_id"):
-            pats = Counter(tuple(g.station) for _, g in dg.groupby("trip_id", sort=False))
+        for d, dg in rg.groupby("direction_id", observed=True):
+            pats = Counter(tuple(g.station.astype(str)) for _, g in dg.groupby("trip_id", sort=False, observed=True))
             order = canonical_order(pats)
             dist = [0.0]
             for a, b in zip(order, order[1:]):
                 pa, pb = pos.get(a), pos.get(b)
                 dist.append(dist[-1] + (haversine_m(pa["lat"], pa["lon"], pb["lat"], pb["lon"]) if pa and pb else 800))
-            top_shape = dg.groupby("shape_id").trip_id.nunique().idxmax() if dg.shape_id.ne("").any() else None
+            top_shape = dg.groupby("shape_id", observed=True).trip_id.nunique().idxmax() if dg.shape_id.ne("").any() else None
             entry["dirs"][d] = {"stations": order, "dist_m": [round(x) for x in dist],
                                 "shape": simplify(shape_pts.get(top_shape, []))}
         lines[rid] = entry
     (out / "subway_lines.json").write_text(json.dumps(lines))
-    print(f"subway: {len(lines)} routes, {len(parents)} stations, {sched.trip_id.nunique()} trips")
+    print(f"subway: {len(lines)} routes, {len(parents)} stations, {st.trip_id.nunique()} trips")
 
 
 # ---------------------------------------------------------------- bus
-def build_bus(feed_dir: Path | None = None, out: Path | None = None):
-    feed_dir = Path(feed_dir or config.STATIC / "bus")
+def _to_parquet_plain(df: pd.DataFrame, path: Path, **kw):
+    """Write categoricals straight from their codes (no per-row strings), as
+    dictionary-encoded text that readers get back as ordinary strings."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    arrays = {}
+    for c in df.columns:
+        col = df[c]
+        if isinstance(col.dtype, pd.CategoricalDtype):
+            arrays[c] = pa.DictionaryArray.from_arrays(
+                pa.array(col.cat.codes.to_numpy(np.int32)), pa.array(col.cat.categories.astype(str).to_numpy(), pa.string()))
+        else:
+            arrays[c] = pa.array(col.to_numpy())
+    pq.write_table(pa.table(arrays), path, store_schema=False, **kw)
+
+
+def bus_feed_dirs() -> list[Path]:
+    """Per-borough bus feeds (production), or a single merged dir (tests)."""
+    single = config.STATIC / "bus"
+    if (single / "stop_times.txt").exists():
+        return [single]
+    feeds = config.STATIC / "bus_feeds"
+    return sorted(d for d in feeds.iterdir() if (d / "stop_times.txt").exists()) if feeds.exists() else []
+
+
+def build_bus(feed_dirs: list[Path] | None = None, out: Path | None = None):
+    """Bus tables, one borough feed at a time so memory stays at one feed's
+    worth. The schedule is written as row groups sorted by service, compact types."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    feed_dirs = feed_dirs or bus_feed_dirs()
     out = Path(out or config.WORK / "static")
     out.mkdir(parents=True, exist_ok=True)
-    stops = read(feed_dir, "stops")
-    routes = read(feed_dir, "routes")
-    trips = read(feed_dir, "trips")
-    st = read(feed_dir, "stop_times", usecols=["trip_id", "stop_id", "arrival_time", "departure_time", "stop_sequence"])
-    st["arr"] = hms_to_sec(st.arrival_time)
-    st["seq"] = st.stop_sequence.astype(int)
-    st = st.merge(trips[["trip_id", "route_id", "service_id", "direction_id", "block_id", "shape_id"]], on="trip_id")
-    st = st.sort_values(["trip_id", "seq"])
-    # Sorted by service so a day's services sit in few row groups, with compact
-    # types: the citywide timetable is ~7 million rows and is read every night.
-    bs = st[["trip_id", "route_id", "service_id", "direction_id", "block_id", "stop_id", "seq", "arr"]]
-    bs = bs.astype({"seq": "int32", "arr": "int32"}).sort_values(["service_id", "trip_id", "seq"])
-    bs.to_parquet(out / "bus_schedule.parquet", index=False, row_group_size=200_000)
-    s = stops[["stop_id", "stop_name", "stop_lat", "stop_lon"]].copy()
+    cols = ["trip_id", "route_id", "service_id", "direction_id", "block_id", "stop_id", "seq", "arr"]
+    text = pa.dictionary(pa.int32(), pa.string())
+    schema = pa.schema([(c, pa.int32() if c in ("seq", "arr") else text) for c in cols])
+    # store_schema=False: readers get plain strings back, not dictionary columns
+    writer = pq.ParquetWriter(out / "bus_schedule.parquet", schema, store_schema=False)
+    stops_parts, lines, n_trips = [], {}, 0
+    for fd in feed_dirs:
+        trips = read(fd, "trips")
+        routes = read(fd, "routes")
+        st = read_stop_times(fd)
+        st = attach_trips(st, trips, ["route_id", "service_id", "direction_id", "block_id", "shape_id"])
+        n_trips += st.trip_id.nunique()
+        bs = st[cols].sort_values(["service_id", "trip_id", "seq"])
+        # hand Parquet the category codes directly (no per-row strings)
+        table = pa.table({c: (pa.array(bs[c].to_numpy(np.int32)) if c in ("seq", "arr") else
+                              pa.DictionaryArray.from_arrays(pa.array(bs[c].cat.codes.to_numpy(np.int32)),
+                                                             pa.array(bs[c].cat.categories.astype(str).to_numpy(), pa.string())))
+                          for c in cols}, schema=schema)
+        writer.write_table(table, row_group_size=200_000)
+        del bs, table
+        stops = read(fd, "stops")
+        stops_parts.append(stops[["stop_id", "stop_name", "stop_lat", "stop_lon"]])
+        shapes = (pd.read_csv(Path(fd) / "shapes.txt", dtype={"shape_id": "category"})
+                  if (Path(fd) / "shapes.txt").exists() else pd.DataFrame())
+        if len(shapes):
+            shapes = shapes.sort_values(["shape_id", "shape_pt_sequence"])
+        for rid, rg in st.groupby("route_id", observed=True):
+            if rid in lines or not (routes.route_id == rid).any():
+                continue
+            r = routes[routes.route_id == rid].iloc[0]
+            top_shape = rg.groupby("shape_id", observed=True).trip_id.nunique().idxmax()
+            pts = (shapes[shapes.shape_id == top_shape][["shape_pt_lon", "shape_pt_lat"]].astype(float).values.tolist()
+                   if len(shapes) else [])
+            lines[rid] = {"route": rid, "name": r.route_long_name,
+                          "color": "#" + (r.get("route_color") or "0039A6"), "shape": simplify(pts)}
+        del st, shapes
+    writer.close()
+    s = pd.concat(stops_parts).drop_duplicates("stop_id")      # boroughs share some stops
     s["lat"], s["lon"] = s.stop_lat.astype(float), s.stop_lon.astype(float)
-    s = s.drop_duplicates("stop_id")      # stops shared between borough feeds
     s[["stop_id", "stop_name", "lat", "lon"]].to_parquet(out / "bus_stops.parquet", index=False)
-
-    shapes = read(feed_dir, "shapes")
-    if len(shapes):
-        shapes["seq"] = shapes.shape_pt_sequence.astype(int)
-        shapes = shapes.sort_values(["shape_id", "seq"])
-    lines = {}
-    for rid, rg in st.groupby("route_id"):
-        r = routes[routes.route_id == rid].iloc[0]
-        top_shape = rg.groupby("shape_id").trip_id.nunique().idxmax()
-        pts = shapes[shapes.shape_id == top_shape][["shape_pt_lon", "shape_pt_lat"]].astype(float).values.tolist() if len(shapes) else []
-        lines[rid] = {"route": rid, "name": r.route_long_name,
-                      "color": "#" + (r.get("route_color") or "0039A6"), "shape": simplify(pts)}
     (out / "bus_lines.json").write_text(json.dumps(lines))
-    print(f"bus: {len(lines)} routes, {st.trip_id.nunique()} trips")
+    print(f"bus: {len(lines)} routes, {n_trips} trips")
 
 
 def build_all():
     build_subway()
-    if (config.STATIC / "bus" / "stop_times.txt").exists():
+    if bus_feed_dirs():
         build_bus()
