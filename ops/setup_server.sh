@@ -11,13 +11,26 @@ REPO=https://github.com/aliowji1/nycsavant.git
 USER_NAME=savant
 
 echo "== packages"
-# a fresh server runs its own updates for a few minutes after boot; wait for them
-while pgrep -x apt-get >/dev/null || pgrep -x apt >/dev/null || pgrep -f unattended-upgr >/dev/null; do
-  echo "   waiting for the server's automatic updates to finish..."
-  sleep 10
-done
-apt-get -o DPkg::Lock::Timeout=600 update -q
-DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -q python3-venv python3-pip git rsync
+# A fresh server installs its own updates for a few minutes after boot and holds
+# the package lock meanwhile. Retry until it's free (up to ~20 minutes).
+apt_retry() {
+  for i in $(seq 1 120); do
+    if DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=10 "$@" 2>/tmp/apt.err; then
+      return 0
+    fi
+    if grep -q "lock" /tmp/apt.err; then
+      echo "   package lock busy (the server's own updates are running), retrying..."
+      sleep 10
+    else
+      cat /tmp/apt.err >&2
+      return 1
+    fi
+  done
+  echo "gave up waiting for the package lock" >&2
+  return 1
+}
+apt_retry update -q
+apt_retry install -y -q python3-venv python3-pip git rsync
 timedatectl set-timezone America/New_York
 
 echo "== swap (headroom for the nightly job on small servers)"
