@@ -56,24 +56,32 @@ def load_arrivals(kind: str, days: int | None = None) -> pd.DataFrame:
 
 
 # ======================================================================= trips
+# Each day is condensed once into one row per trip (trip_rows), kept in
+# work/trips/. Scoring against the rolling window (typical runtimes, on-time)
+# happens at export time on those small tables, never on raw stop events.
+
 def subway_static_meta(dates=None) -> pd.DataFrame:
     """Origin, terminal and scheduled times per trip, from the same schedule
-    each day was matched against (supplemented copies included)."""
-    from . import gtfs_static
-    paths = {gtfs_static.subway_schedule_for(dt.date.fromisoformat(d))[1] for d in (dates or [])}
-    paths = paths or {config.WORK / "static" / "subway_schedule.parquet"}
-    s = pd.concat([pd.read_parquet(p) for p in sorted(paths)]).drop_duplicates(["trip_id", "seq"])
-    s = s.sort_values(["trip_id", "seq"])
-    g = s.groupby("trip_id")
+    each day was matched against (supplemented copies included), reading only
+    the services that ran on those days."""
+    from .reconstruct import load_subway_schedule
+    cols = ["trip_id", "trip_key", "station", "seq", "arr", "dep"]
+    if dates:
+        s = pd.concat([load_subway_schedule(dt.date.fromisoformat(d), cols) for d in dates])
+    else:
+        s = pd.read_parquet(config.WORK / "static" / "subway_schedule.parquet", columns=cols)
+    s = s.drop_duplicates(["trip_id", "seq"]).sort_values(["trip_id", "seq"])
+    g = s.groupby("trip_id", sort=False)
     return pd.DataFrame({
         "origin": g.station.first(), "terminal": g.station.last(),
         "sched_start": g.dep.first(), "sched_end": g.arr.last(), "n_sched": g.size(),
-        "service": g.service_id.first().map(SERVICE_TYPE), "trip_key": g.trip_key.first(),
+        "trip_key": g.trip_key.first(),
     }).reset_index()
 
 
-def subway_trips(arr: pd.DataFrame) -> pd.DataFrame:
-    a = arr.dropna(subset=["trip_id"]).copy()
+def subway_trip_rows(arr: pd.DataFrame) -> pd.DataFrame:
+    """One row per (day, train trip), unscored."""
+    a = arr.dropna(subset=["trip_id"])
     meta = subway_static_meta(sorted(a.date.unique()))
     a = a.merge(meta[["trip_id", "origin", "terminal"]], on="trip_id")
     key = ["date", "rt_trip_id"]
@@ -93,34 +101,51 @@ def subway_trips(arr: pd.DataFrame) -> pd.DataFrame:
     # origin time + route + direction (MTA trip IDs change with each publication)
     from .gtfs_static import short_key
     t["slot"] = t.service + "|" + t.trip_key.map(short_key)
+    return t
+
+
+def score_subway(t: pd.DataFrame) -> pd.DataFrame:
     return _add_trip_scores(t, ["route_id", "direction_id", "origin", "terminal", "service", "hour"], "subway")
 
 
-def bus_trips(arr: pd.DataFrame) -> pd.DataFrame:
-    """One row per (day, bus, trip).
+def subway_trips(arr: pd.DataFrame) -> pd.DataFrame:
+    return score_subway(subway_trip_rows(arr))
+
+
+def bus_trip_rows(arr: pd.DataFrame) -> pd.DataFrame:
+    """One row per (day, bus, trip), unscored.
 
     BusTime usually switches a bus to its next trip only after it has left the
     first stop, so a trip counts as complete when it was seen from within its
     first three stops to the terminal. Time saved compares the runtime between
     the stops actually observed against the schedule for that same stretch.
     """
-    a = arr.sort_values(["date", "vehicle", "trip_id", "seq"])
-    sched = pd.read_parquet(config.WORK / "static" / "bus_schedule.parquet",
-                            columns=["trip_id", "service_id", "seq", "arr"])
-    sched = sched[sched.trip_id.isin(a.trip_id.unique())].sort_values(["trip_id", "seq"])
-    sched["idx"] = sched.groupby("trip_id").cumcount()
+    a = arr[["date", "vehicle", "trip_id", "route_id", "direction_id", "seq", "sched_arr", "arr"]]
+    a = a.sort_values(["date", "vehicle", "trip_id", "seq"])
+    ids = sorted(set(a.trip_id.unique()))
+    from .gtfs_static import read_lean
+    sched = read_lean(config.WORK / "static" / "bus_schedule.parquet", ["trip_id", "seq", "arr"],
+                      [("trip_id", "in", ids)], text_cols=("trip_id",))
+    sched["trip_id"] = sched.trip_id.astype(str)
+    sched = sched.drop_duplicates(["trip_id", "seq"]).sort_values(["trip_id", "seq"])
+    sched["idx"] = sched.groupby("trip_id").cumcount().astype(np.int32)
     sg = sched.groupby("trip_id")
     meta = pd.DataFrame({"last_seq": sg.seq.max(), "n_sched": sg.size(),
-                         "sched_start": sg.arr.min(), "sched_end": sg.arr.max(),
-                         "service": sg.service_id.first().map(SERVICE_TYPE)}).reset_index()
+                         "sched_start": sg.arr.min(), "sched_end": sg.arr.max()}).reset_index()
     a = a.merge(sched[["trip_id", "seq", "idx"]], on=["trip_id", "seq"], how="left")
+    del sched
     key = ["date", "vehicle", "trip_id"]
-    g = a.groupby(key)
+    g = a.groupby(key, sort=False)
     t = g.agg(route_id=("route_id", "first"), direction_id=("direction_id", "first"),
               n_obs=("seq", "size"), first_idx=("idx", "min"), max_seq=("seq", "max"),
               act_start=("arr", "first"), act_end=("arr", "last"),
               sched_at_start=("sched_arr", "first"), sched_at_end=("sched_arr", "last")).reset_index()
-    t = t.merge(meta, on="trip_id")
+    return finish_bus_trip_rows(t.merge(meta, on="trip_id"))
+
+
+def finish_bus_trip_rows(t: pd.DataFrame) -> pd.DataFrame:
+    """Derived columns for bus trip rows (shared by the nightly bus step, which
+    builds the base columns directly, and bus_trip_rows for older days)."""
     t["complete"] = (t.first_idx <= 2) & (t.max_seq == t.last_seq) & (t.n_obs >= 0.8 * t.n_sched)
     t["runtime"] = t.act_end - t.act_start
     t["excess"] = t.runtime - (t.sched_at_end - t.sched_at_start)   # vs schedule, same stretch
@@ -128,7 +153,15 @@ def bus_trips(arr: pd.DataFrame) -> pd.DataFrame:
     t["hour"] = (t.sched_start // 3600).astype(int)
     t["service"] = t.date.map(daytype)
     t["origin"], t["terminal"] = t.first_idx, t.last_seq
+    return t
+
+
+def score_bus(t: pd.DataFrame) -> pd.DataFrame:
     return _add_trip_scores(t, ["route_id", "direction_id", "service", "hour"], "bus", value="excess")
+
+
+def bus_trips(arr: pd.DataFrame) -> pd.DataFrame:
+    return score_bus(bus_trip_rows(arr))
 
 
 def _add_trip_scores(t: pd.DataFrame, bucket: list[str], mode: str, value: str = "runtime") -> pd.DataFrame:
@@ -194,8 +227,8 @@ def line_table(t: pd.DataFrame) -> pd.DataFrame:
 
 
 # ======================================================================= segments
-def subway_segments(arr: pd.DataFrame) -> pd.DataFrame:
-    """Consecutive observed stops within a trip: actual vs typical vs scheduled run time."""
+def segment_rows(arr: pd.DataFrame) -> pd.DataFrame:
+    """Consecutive observed stops within a train trip: actual vs scheduled time."""
     a = arr.dropna(subset=["sched_arr"]).sort_values(["date", "rt_trip_id", "arr"])
     same = (a.rt_trip_id.values[1:] == a.rt_trip_id.values[:-1]) & (a.date.values[1:] == a.date.values[:-1])
     prev, nxt = a.iloc[:-1][same], a.iloc[1:][same]
@@ -207,7 +240,27 @@ def subway_segments(arr: pd.DataFrame) -> pd.DataFrame:
     })
     seg = seg[(seg.actual > 0) & (seg.sched > 0) & (seg.actual < 3 * 3600)]
     seg["hour"] = (seg.t // 3600).astype(int) % 24
-    normal = seg.groupby(["route_id", "from", "to", "hour"]).actual.median().rename("normal")
-    seg = seg.join(normal, on=["route_id", "from", "to", "hour"])
-    seg["excess"] = seg.actual - seg.normal
+    seg["bin"] = (seg.t // 600).clip(0, 143).astype(int)
     return seg
+
+
+SEG_KEY = ["route_id", "direction_id", "from", "to"]
+
+
+def segment_aggregates(arr: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """One day's segments condensed to (hourly, ten_minute) totals.
+    hourly: n, sum/median of actual, sum of scheduled, seconds lost vs schedule.
+    ten_minute: n and sum of actual, for the week-long delay strips."""
+    seg = segment_rows(arr)
+    seg["lost"] = (seg.actual - seg.sched).clip(lower=0)
+    hourly = seg.groupby(["date"] + SEG_KEY + ["hour"]).agg(
+        n=("actual", "size"), sum_actual=("actual", "sum"), med_actual=("actual", "median"),
+        sum_sched=("sched", "sum"), lost=("lost", "sum")).reset_index()
+    bins = seg.groupby(["date"] + SEG_KEY + ["bin"]).agg(
+        n=("actual", "size"), sum_actual=("actual", "sum")).reset_index()
+    return hourly, bins
+
+
+def segment_normals(hourly: pd.DataFrame) -> pd.Series:
+    """Normal running time per segment and hour: median of the daily medians."""
+    return hourly.groupby(["route_id", "from", "to", "hour"]).med_actual.median().rename("normal")

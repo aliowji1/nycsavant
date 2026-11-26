@@ -126,8 +126,7 @@ S.pages.delays = async (root) => {
     { key: "route_id", label: "", cls: "l", html: (r) => S.bullet(r.route_id, "sm") },
     { key: "from", label: "Segment", cls: "l wrap", html: (r) => `${name(r.from)} → ${name(r.to)}` },
     { key: "sched", label: "Sched", fmt: S.fmt.mins, desc: false },
-    { key: "median", label: "Median", fmt: S.fmt.mins },
-    { key: "p90", label: "90th", fmt: S.fmt.mins },
+    { key: "median", label: "Average", fmt: S.fmt.mins },
     { key: "lost_min_per_day", label: "Min lost/day", fmt: (x) => S.fmt.num(x, 0) },
   ], rows, { sort: "lost_min_per_day" });
 };

@@ -84,6 +84,13 @@ python -m savant nightly        # reconstruct yesterday, refresh ridership, expo
 * Docker: `docker build -t nycsavant .` then `docker run -d --restart=always -v $PWD/data:/app/data --env-file .env nycsavant collect`
 * Preview: `make serve` and open http://localhost:8000
 
+**Memory.** The pipeline is built to fit a 1 GB server (e.g. Google Cloud's free e2-micro) with 2 GB of swap,
+which `ops/setup_server.sh` adds. The nightly job reads one day of raw data at a time: buses are processed as
+each trip ends, schedules are read for that day's services only with IDs dictionary-encoded, and every day is
+condensed once into small per-trip and per-segment summaries (`data/work/trips/`, `data/work/segments/`). The site
+export reads only those summaries, so it doesn't grow with the 28-day window. Measured peaks: ~0.6 GB for
+`reconstruct` (bus timetable for a weekday is ~5 million stop rows) and ~0.65 GB for `export`.
+
 Rankings need volume. A bus needs 20 complete trips to qualify (about a week on a busy route); a scheduled subway trip
 needs 5 runs. Leaderboards get meaningful after 2 to 4 weeks. `export` uses a rolling 28-day window (`--days`).
 

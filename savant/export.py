@@ -130,37 +130,44 @@ def lines_table(trips: pd.DataFrame):
 
 
 # ======================================================================= segments / delay week
-def segments(seg: pd.DataFrame, dates: list[str]):
-    days = seg.date.nunique()
-    g = seg.groupby(["route_id", "direction_id", "from", "to"])
-    agg = pd.DataFrame({"n": g.size(), "sched": g.sched.median(), "median": g.actual.median(),
-                        "p90": g.actual.quantile(0.9),
-                        "lost_min_per_day": g.apply(lambda x: (x.actual - x.sched).clip(lower=0).sum() / 60 / days,
-                                                    include_groups=False)}).reset_index()
+def segments(hourly: pd.DataFrame, bins: pd.DataFrame, dates: list[str]):
+    """Worst segments over the window, and the last week's delay strips + map,
+    all from the per-day aggregates (never from raw stop events)."""
+    key = metrics.SEG_KEY
+    days = hourly.date.nunique()
+    g = hourly.groupby(key)
+    agg = pd.DataFrame({"n": g.n.sum(), "sched": g.sum_sched.sum() / g.n.sum(),
+                        "median": g.sum_actual.sum() / g.n.sum(),
+                        "lost_min_per_day": g.lost.sum() / 60 / days}).reset_index()
     agg = agg[agg.n >= 20]
     cols = list(agg.columns)
     dump({"cols": cols, "rows": records(agg.sort_values("lost_min_per_day", ascending=False), cols)},
          "segments.json")
 
-    # last 7 days: per route+dir 10-minute delay index, and per segment hourly index for the map
+    normal = metrics.segment_normals(hourly)
     week = sorted(dates)[-7:]
-    w = seg[seg.date.isin(week)].copy()
     day_i = {d: i for i, d in enumerate(week)}
-    w["bin"] = w.date.map(day_i) * 144 + (w.t // 600).clip(0, 143).astype(int)
-    w["hbin"] = w.date.map(day_i) * 24 + (w.t // 3600).clip(0, 23).astype(int)
-    rd = w.groupby(["route_id", "direction_id", "bin"]).agg(a=("actual", "sum"), n=("normal", "sum"))
-    rd["rel"] = (rd.a / rd.n - 1) * 100
+    # per route+direction, 10-minute delay index vs normal for that segment and hour
+    b = bins[bins.date.isin(week)].copy()
+    b["hour"] = b["bin"] // 6
+    b = b.join(normal, on=["route_id", "from", "to", "hour"]).dropna(subset=["normal"])
+    b["expected"] = b.n * b.normal
+    b["wbin"] = b.date.map(day_i) * 144 + b["bin"]
+    rd = b.groupby(["route_id", "direction_id", "wbin"]).agg(a=("sum_actual", "sum"), e=("expected", "sum"))
+    rd["rel"] = (rd.a / rd.e - 1) * 100
     series = {}
-    for (r, d), g in rd.groupby(level=[0, 1]):
+    for (r, d), gg in rd.groupby(level=[0, 1]):
         arr = np.full(144 * len(week), np.nan)
-        arr[g.index.get_level_values(2)] = g.rel.values
+        arr[gg.index.get_level_values(2)] = gg.rel.values
         series[f"{r}|{d}"] = [None if np.isnan(x) else round(float(x), 1) for x in arr]
-    sg = w.groupby(["route_id", "direction_id", "from", "to", "hbin"]).agg(a=("actual", "sum"), n=("normal", "sum"))
-    sg["rel"] = ((sg.a / sg.n - 1) * 100).round()
-    keys = sorted({k[:4] for k in sg.index})
+    # per segment, hourly index for the map
+    h = hourly[hourly.date.isin(week)].join(normal, on=["route_id", "from", "to", "hour"]).dropna(subset=["normal"])
+    h["hbin"] = h.date.map(day_i) * 24 + h.hour
+    h["rel"] = ((h.sum_actual / (h.n * h.normal) - 1) * 100).round()
+    keys = sorted({tuple(k) for k in h[key].itertuples(index=False)})
     kid = {k: i for i, k in enumerate(keys)}
     mat = [[None] * len(keys) for _ in range(24 * len(week))]
-    for (r, d, f, t, hb), v in sg.rel.items():
+    for r, d, f, t, hb, v in h[key + ["hbin", "rel"]].itertuples(index=False):
         mat[hb][kid[(r, d, f, t)]] = int(v)
     return {"days": week, "series": series, "segments": [list(k) for k in keys], "hourly": mat}
 
@@ -218,25 +225,70 @@ def ridership(dates: list[str], delay_week: dict):
 
 
 # ======================================================================= main
+def _stale(out: Path, src: Path) -> bool:
+    return not out.exists() or out.stat().st_mtime < src.stat().st_mtime
+
+
+def summarize_day(date: str, lines: dict):
+    """Condense one reconstructed day into small files, once. Re-done only if
+    the day was reconstructed again. This is the only step that reads a day's
+    raw stop events, one day at a time, which keeps memory flat."""
+    arr_dir, trips_dir, seg_dir = config.WORK / "arrivals", config.WORK / "trips", config.WORK / "segments"
+    trips_dir.mkdir(parents=True, exist_ok=True)
+    seg_dir.mkdir(parents=True, exist_ok=True)
+    sub_src = arr_dir / f"subway_{date}.parquet"
+    if sub_src.exists():
+        targets = [trips_dir / f"subway_{date}.parquet", seg_dir / f"hourly_{date}.parquet",
+                   seg_dir / f"bins_{date}.parquet", config.SITE_DATA / "marey" / f"{date}.json"]
+        if any(_stale(t, sub_src) for t in targets):
+            sub = pd.read_parquet(sub_src)
+            metrics.subway_trip_rows(sub).to_parquet(targets[0], index=False)
+            hourly, bins = metrics.segment_aggregates(sub)
+            hourly.to_parquet(targets[1], index=False)
+            bins.to_parquet(targets[2], index=False)
+            marey(sub, lines, [date])
+            del sub
+    bus_src = arr_dir / f"bus_{date}.parquet"
+    out = trips_dir / f"bus_{date}.parquet"
+    if bus_src.exists() and _stale(out, bus_src):
+        bt = metrics.bus_trip_rows(pd.read_parquet(bus_src))
+        bt[BUS_TRIP_COLS].astype(BUS_TRIP_TYPES).to_parquet(out, index=False)
+
+
+# Only what scoring and the site use, in compact types: ~50k bus trips a day
+# for 28 days has to fit comfortably in a 1 GB server.
+BUS_TRIP_COLS = ["date", "vehicle", "route_id", "direction_id", "service", "hour", "complete",
+                 "runtime", "excess", "end_delay"]
+BUS_TRIP_TYPES = {"hour": "int8", "runtime": "float32", "excess": "float32", "end_delay": "float32"}
+
+
+def _concat(pattern: str, dates: list[str]) -> pd.DataFrame:
+    """Read per-day summaries for the given dates."""
+    files = [config.WORK / pattern.format(d) for d in dates]
+    files = [f for f in files if f.exists()]
+    if not files:
+        return pd.DataFrame()
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+
+
 def run(window_days: int = 28, simulated: bool = False):
     st, lines = network()
     names = dict(zip(st.station, st.name))
-    sub = metrics.load_arrivals("subway", window_days)
-    dates = sorted(sub.date.unique())
-    t = metrics.subway_trips(sub)
-    t.to_parquet(config.WORK / "subway_trips.parquet", index=False)
+    dates = sorted(p.stem.split("_", 1)[1] for p in (config.WORK / "arrivals").glob("subway_*.parquet"))[-window_days:]
+    for d in dates:
+        summarize_day(d, lines)
+
+    t = metrics.score_subway(_concat("trips/subway_{}.parquet", dates))
     lines_table(t)
     savant_subway(t, names)
-    marey(sub, lines, dates)
-    seg = metrics.subway_segments(sub)
-    dw = segments(seg, dates)
+    del t
+    # 10-minute totals are only drawn for the last week, so only those are loaded
+    dw = segments(_concat("segments/hourly_{}.parquet", dates), _concat("segments/bins_{}.parquet", dates[-7:]), dates)
     ridership(dates, dw)
-    bus = metrics.load_arrivals("bus", window_days)
     nbus = 0
-    if len(bus):
-        bt = metrics.bus_trips(bus)
-        bt.to_parquet(config.WORK / "bus_trips.parquet", index=False)
-        nbus = len(savant_buses(bt))
+    bt = _concat("trips/bus_{}.parquet", dates)
+    if len(bt):
+        nbus = len(savant_buses(metrics.score_bus(bt)))
     dump({"generated": dt.datetime.now().isoformat(timespec="minutes"), "dates": dates,
           "simulated": simulated, "buses": nbus,
           "definitions": {"on_sched": config.ON_SCHED,

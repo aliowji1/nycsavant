@@ -86,6 +86,18 @@ def subway_schedule_for(date: dt.date) -> tuple[Path, Path]:
     return config.STATIC / "subway", config.WORK / "static" / "subway_schedule.parquet"
 
 
+def read_lean(path: Path, columns: list[str], filters=None, text_cols=()) -> pd.DataFrame:
+    """Read a parquet table with repeated text columns as categoricals
+    (dictionary-encoded), which keeps millions of trip/stop IDs small."""
+    import pyarrow.parquet as pq
+    # filter columns must be compact too, or they get read as millions of strings
+    filter_cols = [f[0] for f in (filters or [])]
+    dict_cols = sorted({c for c in text_cols if c in columns} | set(filter_cols))
+    t = pq.read_table(path, columns=columns, filters=filters, read_dictionary=dict_cols)
+    # self_destruct frees Arrow's buffers as columns convert, so the data isn't held twice
+    return t.to_pandas(self_destruct=True, split_blocks=True)
+
+
 def read(feed_dir: Path, name: str, **kw) -> pd.DataFrame:
     p = Path(feed_dir) / f"{name}.txt"
     if not p.exists():
@@ -234,8 +246,11 @@ def build_bus(feed_dir: Path | None = None, out: Path | None = None):
     st["seq"] = st.stop_sequence.astype(int)
     st = st.merge(trips[["trip_id", "route_id", "service_id", "direction_id", "block_id", "shape_id"]], on="trip_id")
     st = st.sort_values(["trip_id", "seq"])
-    st[["trip_id", "route_id", "service_id", "direction_id", "block_id", "stop_id", "seq", "arr"]].to_parquet(
-        out / "bus_schedule.parquet", index=False)
+    # Sorted by service so a day's services sit in few row groups, with compact
+    # types: the citywide timetable is ~7 million rows and is read every night.
+    bs = st[["trip_id", "route_id", "service_id", "direction_id", "block_id", "stop_id", "seq", "arr"]]
+    bs = bs.astype({"seq": "int32", "arr": "int32"}).sort_values(["service_id", "trip_id", "seq"])
+    bs.to_parquet(out / "bus_schedule.parquet", index=False, row_group_size=200_000)
     s = stops[["stop_id", "stop_name", "stop_lat", "stop_lon"]].copy()
     s["lat"], s["lon"] = s.stop_lat.astype(float), s.stop_lon.astype(float)
     s = s.drop_duplicates("stop_id")      # stops shared between borough feeds
