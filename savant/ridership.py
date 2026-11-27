@@ -11,7 +11,9 @@ Set SOCRATA_APP_TOKEN to avoid throttling (free at data.ny.gov).
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
+import time
 
 import pandas as pd
 import requests
@@ -21,6 +23,21 @@ from . import config
 PAGE = 50000
 
 
+def _request(url: str, params: dict, headers: dict, tries: int = 4) -> list[dict]:
+    # data.ny.gov is often slow overnight; retry with backoff instead of giving up
+    for k in range(tries):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=300)
+            r.raise_for_status()
+            return r.json()
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+            if k == tries - 1:
+                raise
+            wait = 30 * 2 ** k
+            logging.info("ridership request failed (%s); retrying in %ds", e.__class__.__name__, wait)
+            time.sleep(wait)
+
+
 def _get(url: str, params: dict) -> list[dict]:
     headers = {}
     if os.environ.get("SOCRATA_APP_TOKEN"):
@@ -28,9 +45,7 @@ def _get(url: str, params: dict) -> list[dict]:
     rows, offset = [], 0
     while True:
         p = dict(params, **{"$limit": PAGE, "$offset": offset})
-        r = requests.get(url, params=p, headers=headers, timeout=120)
-        r.raise_for_status()
-        batch = r.json()
+        batch = _request(url, p, headers)
         rows += batch
         if len(batch) < PAGE:
             return rows
@@ -55,12 +70,19 @@ def fetch_hourly(start: dt.date, end: dt.date):
     return df
 
 
+DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
 def fetch_exit_profile():
-    rows = _get(config.RIDERSHIP_OD, {
-        "$select": "destination_station_complex_id, day_of_week, hour_of_day, "
-                   "sum(estimated_average_ridership) as exits",
-        "$group": "destination_station_complex_id, day_of_week, hour_of_day",
-    })
+    # one query per day of week: summing the whole OD table in one request times out
+    rows = []
+    for day in DAYS:
+        rows += _get(config.RIDERSHIP_OD, {
+            "$select": "destination_station_complex_id, day_of_week, hour_of_day, "
+                       "sum(estimated_average_ridership) as exits",
+            "$where": f"day_of_week='{day}'",
+            "$group": "destination_station_complex_id, day_of_week, hour_of_day",
+        })
     df = pd.DataFrame(rows)
     df["exits"] = df.exits.astype(float)
     df["daytype"] = df.day_of_week.isin(["Saturday", "Sunday"]).map({True: "weekend", False: "weekday"})
@@ -68,5 +90,7 @@ def fetch_exit_profile():
             .reset_index().rename(columns={"destination_station_complex_id": "station_complex_id",
                                            "hour_of_day": "hour"}))
     prof["hour"] = prof.hour.astype(int)
-    prof.to_parquet(config.WORK / "ridership" / "exit_profile.parquet", index=False)
+    out = config.WORK / "ridership"
+    out.mkdir(parents=True, exist_ok=True)
+    prof.to_parquet(out / "exit_profile.parquet", index=False)
     return prof

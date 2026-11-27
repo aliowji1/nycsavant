@@ -74,10 +74,13 @@ def main():
         try:
             # hourly ridership is published with a lag; fetch whatever exists
             ridership.fetch_hourly(d - dt.timedelta(days=a.days), d)
-            if not (config.WORK / "ridership" / "exit_profile.parquet").exists():
-                ridership.fetch_exit_profile()
         except Exception as e:
-            logging.warning("ridership fetch failed: %s", e)
+            logging.warning("hourly ridership fetch failed: %s", e)
+        if not (config.WORK / "ridership" / "exit_profile.parquet").exists():
+            try:
+                ridership.fetch_exit_profile()
+            except Exception as e:
+                logging.warning("exit profile fetch failed: %s", e)
         export.run(a.days)
         collector.prune()
     elif a.cmd == "simulate":
