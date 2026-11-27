@@ -80,6 +80,13 @@ python -m savant nightly        # reconstruct yesterday, refresh ridership, expo
 ./ops/deploy.sh                 # publish site/ (GitHub Pages, Cloudflare Pages, or rsync)
 ```
 
+**Publishing to GitHub Pages.** Set `DEPLOY_TARGET=gh-pages` in `.env` and give the server a deploy key
+(`ssh-keygen -t ed25519 -N "" -f ~/.ssh/nycsavant_deploy` as the `savant` user, then add the `.pub` file under the
+repo's Settings → Deploy keys with write access). `ops/deploy.sh` keeps a clone of the `gh-pages` branch in
+`build/gh-pages` and pushes only changed files, so a typical night uploads a few MB (well inside the e2-micro's
+1 GB/month of free outbound data). On the 1st of each month it squashes the branch to a single commit. Turn on
+Settings → Pages → Deploy from branch → `gh-pages` / root.
+
 * systemd: `ops/savant-collector.service`
 * Docker: `docker build -t nycsavant .` then `docker run -d --restart=always -v $PWD/data:/app/data --env-file .env nycsavant collect`
 * Preview: `make serve` and open http://localhost:8000
