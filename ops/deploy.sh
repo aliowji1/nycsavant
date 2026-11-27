@@ -19,6 +19,7 @@ case "${DEPLOY_TARGET:-none}" in
     # On the 1st of each month the branch is squashed to one commit so it stays small.
     REMOTE="${GH_PAGES_REMOTE:-git@github.com:aliowji1/nycsavant.git}"
     KEY="${GH_PAGES_KEY:-$HOME/.ssh/nycsavant_deploy}"
+    export GIT_TERMINAL_PROMPT=0   # fail instead of asking for a username
     export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
     if [ -n "${GH_PAGES_TOKEN:-}" ]; then
       # HTTPS + token (for org repos, where deploy keys need a paid plan). Passed as a
