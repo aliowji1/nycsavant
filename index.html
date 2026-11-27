@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NYC Savant</title>
+<meta name="description" content="Stat lines for every NYC bus and every scheduled subway trip, plus a close look at how the subway actually runs.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap mast-inner">
+    <a class="brand" href="#/savant"><span class="brand-dot"></span>NYC Savant</a>
+    <nav id="nav">
+      <a href="#/savant">Savant</a>
+      <a href="#/trains">Trains</a>
+      <a href="#/commute">Your commute</a>
+      <a href="#/delays">Delays</a>
+      <a href="#/riders">Riders</a>
+      <a href="#/about">Method</a>
+    </nav>
+  </div>
+</header>
+<div id="sim-banner" class="sim-banner" hidden>
+  <div class="wrap">Demo data. These numbers come from a simulation run on the real MTA schedule, not from real trains or buses. Run the collector to replace them.</div>
+</div>
+<main id="app" class="wrap"></main>
+<footer class="wrap foot" id="foot"></footer>
+<div id="tip" class="tip" hidden></div>
+<script src="vendor/d3.min.js"></script>
+<script src="js/common.js"></script>
+<script src="js/savant.js"></script>
+<script src="js/trains.js"></script>
+<script src="js/commute.js"></script>
+<script src="js/delays.js"></script>
+<script src="js/riders.js"></script>
+<script src="js/about.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
