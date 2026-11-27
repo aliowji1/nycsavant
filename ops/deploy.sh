@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 if [ -f .env ]; then
   while IFS='=' read -r k v; do
     case "$k" in
-      DEPLOY_TARGET|GH_PAGES_REMOTE|GH_PAGES_KEY|CF_PROJECT|RSYNC_DEST) [ -n "$v" ] && export "$k=$v" ;;
+      DEPLOY_TARGET|GH_PAGES_REMOTE|GH_PAGES_KEY|GH_PAGES_TOKEN|CF_PROJECT|RSYNC_DEST) [ -n "$v" ] && export "$k=$v" ;;
     esac
   done < .env
 fi
@@ -20,6 +20,13 @@ case "${DEPLOY_TARGET:-none}" in
     REMOTE="${GH_PAGES_REMOTE:-git@github.com:aliowji1/nycsavant.git}"
     KEY="${GH_PAGES_KEY:-$HOME/.ssh/nycsavant_deploy}"
     export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+    if [ -n "${GH_PAGES_TOKEN:-}" ]; then
+      # HTTPS + token (for org repos, where deploy keys need a paid plan). Passed as a
+      # header through the environment so it never lands in .git/config.
+      export GIT_CONFIG_COUNT=1
+      export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+      export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_PAGES_TOKEN" | base64 | tr -d '\n')"
+    fi
     dir=build/gh-pages
     g() { git -C "$dir" "$@"; }
     if [ ! -d "$dir/.git" ]; then
