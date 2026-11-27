@@ -48,10 +48,13 @@ case "${DEPLOY_TARGET:-none}" in
       g reflog expire --expire=now --all
       g gc -q --prune=now
       echo "published (squashed) $(date +%F)"
-    elif g diff --cached --quiet; then
-      echo "no changes to publish"
     else
-      g commit -qm "nightly $(date +%F)"
+      if g diff --cached --quiet; then
+        echo "no new changes"
+      else
+        g commit -qm "nightly $(date +%F)"
+      fi
+      # always push: also sends any commit left behind by an earlier failed push
       g push -q origin gh-pages
       echo "published $(date +%F)"
     fi
