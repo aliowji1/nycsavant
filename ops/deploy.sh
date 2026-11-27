@@ -32,6 +32,7 @@ case "${DEPLOY_TARGET:-none}" in
         g checkout -q --orphan gh-pages
       fi
     fi
+    g remote set-url origin "$REMOTE"   # follow GH_PAGES_REMOTE if it changes
     g config user.name "nycsavant bot"
     g config user.email "nycsavant-bot@users.noreply.github.com"
 
